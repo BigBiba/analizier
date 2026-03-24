@@ -1,32 +1,14 @@
 package parser
 
 import (
+	pkt "analizier/src/packet"
 	"fmt"
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
 	"github.com/gopacket/gopacket/pcap"
 	"log"
 	"net"
-	"strings"
-	"time"
 )
-
-type Parser struct {
-}
-
-type PacketInfo struct {
-	PacketNumber  int       // № пакета
-	Interface     string    // Интерфейс
-	Timestamp     time.Time // Текущее время и дата пакета
-	TrafficVolume int       // Объем трафика
-	SrcIP         string    // Источник (IP адрес)
-	DstIP         string    // Назначение (IP адрес)
-	IPVersion     string    // Internet Протокол version
-	SrcPort       string    // Порт источника
-	DstPort       string    // Порт назначения
-	Length        int       // Длина
-	Info          string    // Info
-}
 
 func getInterfaceName(index int) string {
 	iface, err := net.InterfaceByIndex(index)
@@ -36,14 +18,17 @@ func getInterfaceName(index int) string {
 	return iface.Name
 }
 
+type Parser struct {
+}
+
 func NewParser() *Parser {
 	return &Parser{}
 }
 
-func (p *Parser) getInfo(packet gopacket.Packet) string {
+func (p *Parser) getInfo(packet gopacket.Packet) []string {
 	transLayer := packet.TransportLayer()
+	var flags []string
 	if tcpLayer, ok := transLayer.(*layers.TCP); ok {
-		var flags []string
 		if tcpLayer.SYN {
 			flags = append(flags, "SYN")
 		}
@@ -62,21 +47,11 @@ func (p *Parser) getInfo(packet gopacket.Packet) string {
 		if tcpLayer.URG {
 			flags = append(flags, "URG")
 		}
-
-		if len(flags) > 0 {
-			return strings.Join(flags, ", ")
-		} else {
-			return "No flags"
-		}
 	}
-
-	if _, ok := transLayer.(*layers.UDP); ok {
-		return "UDP datagram"
-	}
-	return "No info"
+	return flags
 }
 
-func (p *Parser) Parse(filename string) []PacketInfo {
+func (p *Parser) Parse(filename string) []pkt.PacketInfo {
 	handle, err := pcap.OpenOffline(filename)
 	if err != nil {
 		log.Fatal(err)
@@ -87,12 +62,11 @@ func (p *Parser) Parse(filename string) []PacketInfo {
 	packetSource := gopacket.NewPacketSource(handle, linkType)
 	packetNum := 0
 
-	result := make([]PacketInfo, 0)
+	result := make([]pkt.PacketInfo, 0)
 
 	for packet := range packetSource.Packets() {
 		packetNum++
-
-		info := PacketInfo{
+		info := pkt.PacketInfo{
 			PacketNumber:  packetNum,
 			Interface:     getInterfaceName(packet.Metadata().InterfaceIndex),
 			Timestamp:     packet.Metadata().Timestamp,
@@ -101,6 +75,7 @@ func (p *Parser) Parse(filename string) []PacketInfo {
 		}
 		if netLayer := packet.NetworkLayer(); netLayer != nil {
 			flow := netLayer.NetworkFlow()
+			info.FlowID = flow
 			src, dst := flow.Endpoints()
 			info.SrcIP = src.String()
 			info.DstIP = dst.String()
@@ -114,11 +89,12 @@ func (p *Parser) Parse(filename string) []PacketInfo {
 		}
 		if transLayer := packet.TransportLayer(); transLayer != nil {
 			flow := transLayer.TransportFlow()
+			info.FlowID = flow
 			src, dst := flow.Endpoints()
 			info.SrcPort = src.String()
 			info.DstPort = dst.String()
 		}
-		info.Info = p.getInfo(packet)
+		info.Flags = p.getInfo(packet)
 		result = append(result, info)
 	}
 
