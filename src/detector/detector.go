@@ -53,8 +53,6 @@ type Detector interface {
 	Analyze(stats packet.FlowStats) DetectionResult
 }
 
-// FlowDetector анализирует потоки целиком (с IP-адресами и пакетами),
-// что необходимо для детекторов, требующих кросс-поточной корреляции.
 type FlowDetector interface {
 	Name() string
 	AnalyzeFlow(flow *packet.FlowInfo) DetectionResult

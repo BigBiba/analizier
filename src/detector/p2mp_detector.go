@@ -6,18 +6,11 @@ import (
 	"sync"
 )
 
-// P2MPDetector обнаруживает трафик типа "точка–многоточие" (Point-to-Multipoint).
-// Паттерн: один источник отправляет данные большому числу уникальных получателей.
-//
-// Детектор stateful: он накапливает состояние по всем проанализированным потокам
-// и возвращает результат на основе накопленной картины.
-// Реализует интерфейс FlowDetector, т.к. для корреляции необходимы IP-адреса,
-// которых нет в FlowStats.
+
 type P2MPDetector struct {
 	mu        sync.Mutex
-	srcToDsts map[string]map[string]struct{} // srcIP → множество dstIP
+	srcToDsts map[string]map[string]struct{} 
 
-	// Threshold — минимальное число уникальных получателей для признания P2MP
 	Threshold int
 }
 
@@ -32,11 +25,7 @@ func (d *P2MPDetector) Name() string {
 	return "P2MP Detector"
 }
 
-// AnalyzeFlow обновляет внутреннее состояние данными потока и возвращает результат.
-// Если хотя бы один источник из потока уже достиг порогового числа получателей —
-// детектор сообщает об аномалии.
 func (d *P2MPDetector) AnalyzeFlow(flow *packet.FlowInfo) DetectionResult {
-	// Собираем уникальные пары srcIP→dstIP из пакетов потока
 	localSrcDsts := make(map[string]map[string]struct{})
 	for _, pkt := range flow.Packets {
 		if pkt.SrcIP == "" || pkt.DstIP == "" {
@@ -51,7 +40,6 @@ func (d *P2MPDetector) AnalyzeFlow(flow *packet.FlowInfo) DetectionResult {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Обновляем глобальное состояние
 	for src, dsts := range localSrcDsts {
 		if _, ok := d.srcToDsts[src]; !ok {
 			d.srcToDsts[src] = make(map[string]struct{})
@@ -61,7 +49,6 @@ func (d *P2MPDetector) AnalyzeFlow(flow *packet.FlowInfo) DetectionResult {
 		}
 	}
 
-	// Проверяем: есть ли среди источников потока хотя бы один с P2MP-паттерном
 	maxDsts := 0
 	for src := range localSrcDsts {
 		if cnt := len(d.srcToDsts[src]); cnt > maxDsts {
@@ -73,7 +60,6 @@ func (d *P2MPDetector) AnalyzeFlow(flow *packet.FlowInfo) DetectionResult {
 		return DetectionResult{IsAnomaly: false, Confidence: 0, Type: AnomalyNone}
 	}
 
-	// Уверенность растёт вместе с числом получателей, насыщаясь к 2×Threshold
 	confidence := math.Min(1.0, float64(maxDsts)/float64(d.Threshold*2))
 
 	return DetectionResult{
@@ -83,7 +69,6 @@ func (d *P2MPDetector) AnalyzeFlow(flow *packet.FlowInfo) DetectionResult {
 	}
 }
 
-// Reset сбрасывает накопленное состояние детектора (например, между временными окнами).
 func (d *P2MPDetector) Reset() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
