@@ -1,20 +1,20 @@
 package main
 
 import (
+	"analizier/src/detector"
 	pkt "analizier/src/packet"
 	"analizier/src/parser"
 	"encoding/csv"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"time"
 )
 
-func printNPackets(packets []pkt.PacketInfo, n int) {
-	for i := 0; i < n; i++ {
-		pkt.PrintPacketInfo(packets[i])
-	}
-}
+// ------------------------------------------------------------
+// Вспомогательные функции
+// ------------------------------------------------------------
 
 func ExportFlowsToCSV(filename string, flows map[string]*pkt.FlowInfo) error {
 	file, err := os.Create(filename)
@@ -34,19 +34,17 @@ func ExportFlowsToCSV(filename string, flows map[string]*pkt.FlowInfo) error {
 		return err
 	}
 
-	// 2. Итерируемся по данным
 	for id, info := range flows {
 		s := info.Stats
-
 		record := []string{
-			id,                                        // FlowID
-			strconv.Itoa(s.CntPackets),                // Количество пакетов
-			strconv.Itoa(s.FlowLength),                // Общий объем (FlowLength)
-			fmt.Sprintf("%.2f", s.AvgPacketSize),      // Средний размер
-			fmt.Sprintf("%.2f", s.StdDevPacketSize),   // Отклонение
-			fmt.Sprintf("%.2f", s.BPS),                // BPS
-			fmt.Sprintf("%d", s.IAT.Milliseconds()),   // IAT в миллисекундах
-			fmt.Sprintf("%.4f", s.Duration.Seconds()), // Длительность в секундах
+			id,
+			strconv.Itoa(s.CntPackets),
+			strconv.Itoa(s.FlowLength),
+			fmt.Sprintf("%.2f", s.AvgPacketSize),
+			fmt.Sprintf("%.2f", s.StdDevPacketSize),
+			fmt.Sprintf("%.2f", s.BPS),
+			fmt.Sprintf("%d", s.IAT.Milliseconds()),
+			fmt.Sprintf("%.4f", s.Duration.Seconds()),
 			strconv.Itoa(s.CntSYN),
 			strconv.Itoa(s.CntACK),
 			strconv.Itoa(s.CntFIN),
@@ -54,12 +52,10 @@ func ExportFlowsToCSV(filename string, flows map[string]*pkt.FlowInfo) error {
 			strconv.Itoa(s.CntRST),
 			strconv.Itoa(s.CntURG),
 		}
-
 		if err := writer.Write(record); err != nil {
 			return err
 		}
 	}
-
 	return nil
 }
 
@@ -121,30 +117,147 @@ func ExportWindowsToCSV(filename string, windows []pkt.TimeWindow) error {
 			strconv.Itoa(s.CntPSH),
 			strconv.Itoa(s.CntURG),
 		}
-
 		if err := writer.Write(record); err != nil {
 			return fmt.Errorf("error writing record: %v", err)
 		}
 	}
-
 	return nil
 }
 
-func main() {
-	parser := parser.NewParser()
-	filename := "files/1.pcap"
-	packets := parser.Parse(filename)
-	windows := pkt.SplitIntoWindows(packets, 10*time.Second)
-	err := ExportWindowsToCSV("files/1_windows.csv", windows)
-	if err != nil {
-		fmt.Println(err)
+// totalRST возвращает суммарное количество RST-пакетов во всех окнах
+func totalRST(windows []pkt.TimeWindow) int {
+	total := 0
+	for _, w := range windows {
+		total += w.Stats.CntRST
 	}
-	//flows := DivideByFlow(packets)
-	//for _, v := range flows {
-	//	pkt.AnalyzeFlow(v)
-	//}
-	//err := ExportFlowsToCSV("files/26_flows.csv", flows)
-	//if err != nil {
-	//	fmt.Println(err)
-	//}
+	return total
+}
+
+//////////////////////////////////////////////////////////////////////////
+
+func detectDDoSWindows(windows []pkt.TimeWindow) []pkt.TimeWindow {
+	var anomalous []pkt.TimeWindow
+	totalRST := totalRST(windows)
+	const (
+		bpsThreshold      = 1_000_000 // порог BPS
+		rstSynRatio       = 15.0      // порог RST/SYN (для атак с RST)
+		uniqueDstPortsAbs = 371       // абсолютный порог уникальных портов
+		highAvgPorts      = 1000      // порог для долгосрочного среднего
+		windowCount       = 10        // количество окон для среднего
+	)
+	if totalRST > 10 {
+		for i, w := range windows {
+			s := w.Stats
+
+			// 1. Аномальное отношение RST/SYN
+			if s.CntSYN > 0 && float64(s.CntRST)/float64(s.CntSYN) > rstSynRatio {
+				anomalous = append(anomalous, w)
+				continue
+			}
+
+			// Если BPS низкий – не рассматриваем
+			if s.BPS <= bpsThreshold {
+				continue
+			}
+
+			// 2. Абсолютное большое количество уникальных портов назначения
+			if s.UniqueDstPorts > uniqueDstPortsAbs {
+				anomalous = append(anomalous, w)
+				continue
+			}
+
+			// 3. Долгосрочное высокое среднее уникальных портов (ловит окна после начала атаки)
+			if i >= windowCount-1 {
+				avg := 0.0
+				for j := i - windowCount + 1; j <= i; j++ {
+					avg += float64(windows[j].Stats.UniqueDstPorts)
+				}
+				avg /= windowCount
+				if avg > highAvgPorts {
+					anomalous = append(anomalous, w)
+				}
+			}
+		}
+	}
+	return anomalous
+}
+
+// ------------------------------------------------------------
+// Основная функция
+// ------------------------------------------------------------
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: go run main.go <pcap_file>")
+		return
+	}
+	filename := os.Args[1]
+
+	p := parser.NewParser()
+	packets := p.Parse(filename)
+
+	windows := pkt.SplitIntoWindows(packets, 10*time.Second)
+
+	flows := DivideByFlow(packets)
+	for _, flow := range flows {
+		pkt.AnalyzeFlow(flow)
+	}
+
+	// ----- DDoS детекция -----
+	anomalousWindows := detectDDoSWindows(windows)
+	dosFlowIDs := make(map[string]bool)
+	for _, win := range anomalousWindows {
+		for flowID, flow := range flows {
+			if len(flow.Packets) == 0 {
+				continue
+			}
+			firstPkt := flow.Packets[0].Timestamp
+			if (firstPkt.After(win.StartTime) || firstPkt.Equal(win.StartTime)) &&
+				(firstPkt.Before(win.EndTime) || firstPkt.Equal(win.EndTime)) {
+				dosFlowIDs[flowID] = true
+			}
+		}
+	}
+	dosCount := len(dosFlowIDs)
+
+	fmt.Printf("Anomalous windows: %d\n", len(anomalousWindows))
+	for _, win := range anomalousWindows {
+		s := win.Stats
+		ratio := float64(s.CntRST) / float64(s.CntSYN+1)
+		fmt.Printf("  %s – %s  BPS=%.0f  PPS=%.0f  SYN=%d  RST=%d  RST/SYN=%.2f  UniqueDstPorts=%d\n",
+			win.StartTime.Format("15:04:05"), win.EndTime.Format("15:04:05"),
+			s.BPS, s.PPS, s.CntSYN, s.CntRST, ratio, s.UniqueDstPorts)
+	}
+	fmt.Printf("Total DoS flows (started in anomalous windows): %d\n", dosCount)
+
+	// ----- Детекция червей (смягчённые пороги + отладка) -----
+	// Список подозрительных портов (включаем 25 для поиска)
+	suspiciousPorts := []int{445, 139, 1433, 6881, 25}
+	_, internalNet, _ := net.ParseCIDR("59.166.0.0/16")
+	wormDet := detector.NewWormDetector(200, 100_000, internalNet)
+
+	wormCount := 0
+	fmt.Println("\n--- Debug: flows on suspicious ports (all, not only anomalies) ---")
+	for _, flow := range flows {
+		dstPort, _ := strconv.Atoi(flow.Stats.DstPort)
+		isSuspicious := false
+		for _, p := range suspiciousPorts {
+			if dstPort == p {
+				isSuspicious = true
+				break
+			}
+		}
+		if isSuspicious {
+			fmt.Printf("Suspicious flow: %s  dstPort=%d  packets=%d  BPS=%.0f  duration=%.2fs\n",
+				flow.FlowID, dstPort, flow.Stats.CntPackets, flow.Stats.BPS, flow.Stats.Duration.Seconds())
+		}
+
+		res := wormDet.Analyze(flow.Stats)
+		if res.IsAnomaly {
+			wormCount++
+			// выведем и те, что признаны аномальными
+			fmt.Printf("*** WORM DETECTED: %s  dstPort=%d  packets=%d  BPS=%.0f\n",
+				flow.FlowID, dstPort, flow.Stats.CntPackets, flow.Stats.BPS)
+		}
+	}
+	fmt.Printf("Total Worm flows (by detector): %d\n", wormCount)
 }
