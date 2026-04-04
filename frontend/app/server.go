@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	pkt "analizier/src/packet"
-	//"analizier/src/parser"
+	"analizier/src/parser"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -95,19 +95,21 @@ func main() {
 		}
 	}()
 
-	// go func() {
-	// 	parser := parser.NewParser()
-	// 	packets := parser.Parse("files/1.pcap")
+	go func() {
+		parser := parser.NewParser()
+		packets := parser.Parse("files/small.pcap")
 
-	// 	for _, p := range packets {
-	// 		t := MapPacketToTraffic(p)
+		for _, p := range packets {
+			t := MapPacketToTraffic(p)
 
-	// 		db.Create(&t)
-	// 		broadcast <- t
-	// 	}
-	// }()
+			db.Create(&t)
+			broadcast <- t
+		}
+	}()
 
 	r := gin.Default()
+
+	r.MaxMultipartMemory = 10 << 20
 
 	// CORS
 	r.Use(func(c *gin.Context) {
@@ -119,6 +121,33 @@ func main() {
 			return
 		}
 		c.Next()
+	})
+
+	r.POST("/api/upload", func(c *gin.Context) {
+		file, err := c.FormFile("file")
+		if err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+
+		// сохраняем файл
+		path := "files/" + file.Filename
+		if err := c.SaveUploadedFile(file, path); err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+
+		// парсим
+		parser := parser.NewParser()
+		packets := parser.Parse(path)
+
+		for _, p := range packets {
+			t := MapPacketToTraffic(p)
+			db.Create(&t)
+			broadcast <- t
+		}
+
+		c.JSON(200, gin.H{"status": "uploaded and parsed"})
 	})
 
 	// POST /api/traffic
@@ -139,13 +168,26 @@ func main() {
 
 		sourceIP := c.Query("source_ip")
 
+		// пагинация
+		page := c.DefaultQuery("page", "1")
+		limit := c.DefaultQuery("limit", "20")
+
+		var pageInt, limitInt int
+		fmt.Sscanf(page, "%d", &pageInt)
+		fmt.Sscanf(limit, "%d", &limitInt)
+
+		offset := (pageInt - 1) * limitInt
+
 		query := db
 
 		if sourceIP != "" {
 			query = query.Where("source_ip LIKE ?", "%"+sourceIP+"%")
 		}
 
-		query.Order("id asc").Find(&traffic)
+		query.Order("id asc").
+			Limit(limitInt).
+			Offset(offset).
+			Find(&traffic)
 
 		c.JSON(http.StatusOK, traffic)
 	})
