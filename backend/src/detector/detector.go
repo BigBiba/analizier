@@ -1,7 +1,7 @@
 package detector
 
 import (
-	"analizier/src/packet"
+	"analizier/backend/src/packet"
 	"fmt"
 )
 

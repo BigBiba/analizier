@@ -1,7 +1,7 @@
 package parser
 
 import (
-	pkt "analizier/src/packet"
+	pkt "analizier/backend/src/packet"
 	"fmt"
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"

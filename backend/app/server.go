@@ -2,52 +2,30 @@ package main
 
 import (
 	"fmt"
-	"net/http"
 	"strings"
 
+<<<<<<< HEAD
 	pkt "analizier/src/packet"
 	"analizier/src/parser"
+=======
+	"analizier/backend/src/models"
+	pkt "analizier/backend/src/packet"
+	//"analizier/src/parser"
+>>>>>>> 4f723e5 (2 iter)
 
-	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
-type Traffic struct {
-	ID uint `json:"id" gorm:"primaryKey"`
-
-	FlowID string `json:"flow_id"`
-
-	Timestamp string `json:"timestamp"`
-	Interface string `json:"interface"`
-
-	SourceIP      string `json:"source_ip"`
-	DestinationIP string `json:"destination_ip"`
-
-	SourcePort      string `json:"source_port"`
-	DestinationPort string `json:"destination_port"`
-
-	IPVersion string `json:"ip_version"`
-
-	Length        int `json:"length"`
-	TrafficVolume int `json:"traffic_volume"`
-
-	Flags string `json:"flags"`
-
-	AnomalyType string `json:"anomaly_type"`
-}
-
 type Client struct {
 	Conn *websocket.Conn
-	Send chan Traffic
+	Send chan models.Traffic
 }
 
-var db *gorm.DB
-
-func MapPacketToTraffic(p pkt.PacketInfo) Traffic {
-	return Traffic{
+func MapPacketToTraffic(p pkt.PacketInfo) models.Traffic {
+	return models.Traffic{
 		FlowID: fmt.Sprintf("%v", p.FlowID),
 
 		Timestamp: p.Timestamp.Format("2006-01-02 15:04:05"),
@@ -71,30 +49,17 @@ func MapPacketToTraffic(p pkt.PacketInfo) Traffic {
 }
 
 func main() {
-	var err error
-	db, err = gorm.Open(sqlite.Open("traffic.db"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open("traffic.db"), &gorm.Config{})
 	if err != nil {
-		panic(err)
+		panic("failed to connect database")
 	}
-	db.AutoMigrate(&Traffic{})
+	db.AutoMigrate(&models.Traffic{})
 
-	clients := make(map[*Client]bool)
-	broadcast := make(chan Traffic)
-	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	app := NewApp(db)
 
-	go func() {
-		for traffic := range broadcast {
-			for client := range clients {
-				select {
-				case client.Send <- traffic:
-				default:
-					close(client.Send)
-					delete(clients, client)
-				}
-			}
-		}
-	}()
+	go app.runBroadcast()
 
+<<<<<<< HEAD
 	go func() {
 		parser := parser.NewParser()
 		packets := parser.Parse("files/small.pcap")
@@ -226,4 +191,8 @@ func main() {
 	})
 
 	r.Run("0.0.0.0:8080")
+=======
+	app.SetupRouter()
+	app.Router.Run("0.0.0.0:8080")
+>>>>>>> 4f723e5 (2 iter)
 }
