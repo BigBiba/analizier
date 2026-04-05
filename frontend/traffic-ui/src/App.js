@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from "react";
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   LineChart, Line,
 } from "recharts";
 
@@ -13,21 +13,43 @@ function App() {
 
   const itemsPerPage = 20;
 
-  // Цвета строк
+  const getAnomaly = (item) =>
+    item?.anomaly_type?.trim() || "None";
+
   const getRowStyle = (anomaly) => {
     switch (anomaly) {
-      case "Malware":
-        return { backgroundColor: "#ffcccc" };
-      case "Suspicious":
-        return { backgroundColor: "#fff3cd" };
+      case "DoS/DDoS Attack":
+        return { backgroundColor: "#ff4d4d" };
+
+      case "Network Overload":
+        return { backgroundColor: "#ff944d" };
+
+      case "Network/Port Scanning":
+        return { backgroundColor: "#ffc107" };
+
+      case "Worm Activity":
+        return { backgroundColor: "#ff6666" };
+
+      case "Point-to-Multipoint":
+        return { backgroundColor: "#66ccff" };
+
+      case "Flow Switching":
+        return { backgroundColor: "#c084fc" };
+
+      case "Confirmed Virus Activity":
+        return { backgroundColor: "#cc0000", color: "white" };
+
       case "None":
+      case "":
+      case null:
+      case undefined:
         return { backgroundColor: "#e6ffed" };
+
       default:
-        return {};
+        return { backgroundColor: "#f0f0f0" };
     }
   };
 
-  // Загрузка файла
   const handleUpload = async () => {
     if (!file) return;
 
@@ -42,24 +64,22 @@ function App() {
     fetchData();
   };
 
-  // Получение данных
   const fetchData = useCallback(() => {
-    let url = `http://127.0.0.1:8080/api/traffic?page=${currentPage}&limit=20`;
+    let url = `http://127.0.0.1:8080/api/traffic?page=${currentPage}&limit=${itemsPerPage}`;
 
     if (filterIP.trim() !== "") {
-      url += `?source_ip=${encodeURIComponent(filterIP)}`;
+      url += `&source_ip=${encodeURIComponent(filterIP)}`;
     }
 
     fetch(url)
       .then((res) => res.json())
-      .then((items) => setData(items));
-  }, [filterIP]);
+      .then((items) => setData(items || []));
+  }, [filterIP, currentPage]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData]);
 
-  // WebSocket
   useEffect(() => {
     const ws = new WebSocket("ws://127.0.0.1:8080/ws");
 
@@ -75,54 +95,71 @@ function App() {
     return () => ws.close();
   }, []);
 
-  // Фильтрация
   const filteredData = data.filter((item) => {
     return (
       (filterIP === "" ||
-        item.source_ip.includes(filterIP) ||
-        item.destination_ip.includes(filterIP)) &&
-      (filterAnomaly === "" || item.anomaly_type === filterAnomaly)
+        item.source_ip?.includes(filterIP) ||
+        item.destination_ip?.includes(filterIP)) &&
+      (filterAnomaly === "" || getAnomaly(item) === filterAnomaly)
     );
   });
 
-  // Сброс страницы при фильтрах
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [filterIP, filterAnomaly]);
-
-  // Пагинация
   const totalPages = Math.ceil(filteredData.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
   const paginatedData = filteredData.slice(startIndex, startIndex + itemsPerPage);
 
-  // Графики
   const trafficByIP = Object.values(
     filteredData.reduce((acc, cur) => {
-      acc[cur.source_ip] = acc[cur.source_ip] || { source_ip: cur.source_ip, volume: 0 };
-      acc[cur.source_ip].volume += cur.traffic_volume;
+      const ip = cur.source_ip || "unknown";
+
+      if (!acc[ip]) {
+        acc[ip] = { source_ip: ip, volume: 0 };
+      }
+
+      acc[ip].volume += cur.traffic_volume || 0;
+
       return acc;
     }, {})
   );
 
   const anomaliesCount = Object.values(
     filteredData.reduce((acc, cur) => {
-      if (cur.anomaly_type && cur.anomaly_type !== "None") {
-        acc[cur.anomaly_type] = acc[cur.anomaly_type] || { anomaly_type: cur.anomaly_type, count: 0 };
-        acc[cur.anomaly_type].count += 1;
+      const anomaly =
+        cur?.anomalies?.[0]?.anomaly_type;
+
+      if (!anomaly) return acc;
+
+      if (!acc[anomaly]) {
+        acc[anomaly] = {
+          anomaly_type: anomaly,
+          count: 0,
+        };
       }
+
+      acc[anomaly].count += 1;
+
       return acc;
     }, {})
   );
 
   const trafficByTime = Object.values(
     filteredData.reduce((acc, cur) => {
-      const time = cur.timestamp.split(" ")[1].slice(0, 5);
-      acc[time] = acc[time] || { time, volume: 0 };
-      acc[time].volume += cur.traffic_volume;
+      const time = (cur.timestamp || "").slice(11, 16);
+
+      if (!time) return acc;
+
+      if (!acc[time]) {
+        acc[time] = { time, volume: 0 };
+      }
+
+      acc[time].volume += cur.traffic_volume || 0;
+
       return acc;
     }, {})
   );
-
+  console.log("SAMPLE ITEM:", anomaliesCount.length);
+  console.log(getAnomaly(data[0]));
+  console.log("RAW ITEM:", data[0]);
   return (
     <div style={{ padding: "20px" }}>
       <h2>Network Traffic</h2>
@@ -133,7 +170,7 @@ function App() {
         <button onClick={handleUpload}>Upload PCAP</button>
       </div>
 
-      {/* Фильтры */}
+      {/* Filters */}
       <div style={{ marginBottom: "20px" }}>
         <input
           placeholder="Filter by IP"
@@ -144,16 +181,20 @@ function App() {
         <select
           value={filterAnomaly}
           onChange={(e) => setFilterAnomaly(e.target.value)}
-          style={{ marginLeft: "10px" }}
         >
           <option value="">All</option>
-          <option value="None">None</option>
-          <option value="Suspicious">Suspicious</option>
-          <option value="Malware">Malware</option>
+
+          <option value="DoS/DDoS Attack">DoS/DDoS</option>
+          <option value="Network Overload">Overload</option>
+          <option value="Network/Port Scanning">Port Scanning</option>
+          <option value="Worm Activity">Worm</option>
+          <option value="Confirmed Virus Activity">Virus</option>
+          <option value="Point-to-Multipoint">P2MP</option>
+          <option value="Flow Switching">Flow Switching</option>
         </select>
       </div>
 
-      {/* Пагинация */}
+      {/* Pagination */}
       <div>
         <button disabled={currentPage === 1}
           onClick={() => setCurrentPage(p => p - 1)}>Prev</button>
@@ -166,7 +207,7 @@ function App() {
           onClick={() => setCurrentPage(p => p + 1)}>Next</button>
       </div>
 
-      {/* Таблица */}
+      {/* Table */}
       <table border="1" cellPadding="8" style={{ marginTop: "20px" }}>
         <thead>
           <tr>
@@ -182,9 +223,13 @@ function App() {
             <th>Anomaly</th>
           </tr>
         </thead>
+
         <tbody>
           {paginatedData.map((item) => (
-            <tr key={item.id} style={getRowStyle(item.anomaly_type)}>
+            <tr
+              key={item.id}
+              style={getRowStyle(getAnomaly(item))}
+            >
               <td>{item.id}</td>
               <td>{item.flow_id}</td>
               <td>{item.timestamp}</td>
@@ -194,37 +239,42 @@ function App() {
               <td>{item.destination_port}</td>
               <td>{item.flags}</td>
               <td>{item.traffic_volume}</td>
-              <td>{item.anomaly_type}</td>
+              <td>{getAnomaly(item)}</td>
             </tr>
           ))}
         </tbody>
       </table>
 
-      {/* Графики */}
+      {/* Charts */}
       <div style={{ display: "flex", gap: "40px", marginTop: "40px" }}>
-        <BarChart width={350} height={250} data={trafficByIP}>
+
+        <BarChart width={350} height={250} data={trafficByIP}
+          margin={{ top: 20, right: 30, left: 60, bottom: 20 }}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis dataKey="source_ip" />
-          <YAxis />
+          <YAxis tickFormatter={(v) => v.toLocaleString()} width={80} />
           <Tooltip />
-          <Bar dataKey="volume" fill="#8884d8" />
+          <Bar dataKey="volume" />
         </BarChart>
 
-        <BarChart width={350} height={250} data={anomaliesCount}>
+        <BarChart width={350} height={250} data={anomaliesCount}
+          margin={{ top: 20, right: 30, left: 60, bottom: 20 }}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis dataKey="anomaly_type" />
-          <YAxis />
+          <YAxis tickFormatter={(v) => v.toLocaleString()} width={80} />
           <Tooltip />
-          <Bar dataKey="count" fill="#82ca9d" />
+          <Bar dataKey="count" />
         </BarChart>
 
-        <LineChart width={350} height={250} data={trafficByTime}>
+        <LineChart width={350} height={250} data={trafficByTime}
+          margin={{ top: 20, right: 30, left: 60, bottom: 20 }}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis dataKey="time" />
-          <YAxis />
+          <YAxis tickFormatter={(v) => v.toLocaleString()} width={80} />
           <Tooltip />
-          <Line type="monotone" dataKey="volume" stroke="#ff7300" />
+          <Line type="monotone" dataKey="volume" />
         </LineChart>
+
       </div>
     </div>
   );

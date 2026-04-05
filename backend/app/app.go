@@ -27,15 +27,17 @@ func NewApp(db *gorm.DB) *App {
 	router.MaxMultipartMemory = 10 << 20
 
 	repo := repository.NewSqliteTrafficRepo(db)
-	// Добавить детекторы
 	detectors := []detector.Detector{}
 
-	trafficService := service.NewTrafficService(repo, detectors)
+	broadcast := make(chan models.Traffic)
+
+	trafficService := service.NewTrafficService(repo, detectors, broadcast)
+
 	return &App{
 		Router:    router,
 		DB:        db,
 		Clients:   make(map[*Client]bool),
-		Broadcast: make(chan models.Traffic),
+		Broadcast: broadcast,
 		Upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},

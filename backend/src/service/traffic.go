@@ -70,15 +70,18 @@ func contains(slice []string, item string) bool {
 type TrafficService struct {
 	detectors []detector.Detector
 	repo      repository.TrafficRepository
+	broadcast chan models.Traffic
 }
 
 func NewTrafficService(
 	repo repository.TrafficRepository,
 	detectors []detector.Detector,
+	broadcast chan models.Traffic,
 ) *TrafficService {
 	return &TrafficService{
 		repo:      repo,
 		detectors: detectors,
+		broadcast: broadcast,
 	}
 }
 
@@ -112,6 +115,8 @@ func (s *TrafficService) Pipeline(filename string) error {
 				})
 			}
 		}
+		s.broadcast <- trafficModel
+
 		trafficRecords = append(trafficRecords, &trafficModel)
 	}
 	err := s.repo.CreateBulk(trafficRecords)
