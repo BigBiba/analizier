@@ -1,7 +1,10 @@
 package main
 
 import (
+	"analizier/backend/src/detector"
 	"analizier/backend/src/models"
+	"analizier/backend/src/repository"
+	"analizier/backend/src/service"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -10,22 +13,34 @@ import (
 )
 
 type App struct {
-	Router    *gin.Engine
-	DB        *gorm.DB
-	Clients   map[*Client]bool
-	Broadcast chan models.Traffic
-	Upgrader  websocket.Upgrader
+	Router         *gin.Engine
+	DB             *gorm.DB
+	Clients        map[*Client]bool
+	Broadcast      chan models.Traffic
+	Upgrader       websocket.Upgrader
+	TrafficService *service.TrafficService
+	TrafficRepo    *repository.TrafficRepository
 }
 
 func NewApp(db *gorm.DB) *App {
+	router := gin.Default()
+	router.MaxMultipartMemory = 10 << 20
+
+	repo := repository.NewSqliteTrafficRepo(db)
+	// Добавить детекторы
+	detectors := []detector.Detector{}
+
+	trafficService := service.NewTrafficService(repo, detectors)
 	return &App{
-		Router:    gin.Default(),
+		Router:    router,
 		DB:        db,
 		Clients:   make(map[*Client]bool),
 		Broadcast: make(chan models.Traffic),
 		Upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
+		TrafficService: trafficService,
+		TrafficRepo:    &repo,
 	}
 }
 
@@ -39,6 +54,8 @@ func (a *App) SetupRouter() {
 		api.POST("/traffic", a.handlePostTraffic)
 		// GET /api/traffic
 		api.GET("/traffic", a.handleGetTraffic)
+		// POST /api/upload
+		api.POST("/upload", a.handleUpload)
 	}
 
 	a.Router.GET("/ws", a.handleWebSocket)
@@ -57,6 +74,35 @@ func (a *App) corsMiddleware() gin.HandlerFunc {
 	}
 }
 
+func (a *App) handleUpload(c *gin.Context) {
+	file, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	path := "files/" + file.Filename
+	if err = c.SaveUploadedFile(file, path); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	err = a.TrafficService.Pipeline(path)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	//parser := parser.NewParser()
+	//packets := parser.Parse(path)
+
+	//for _, p := range packets {
+	//	t := MapPacketToTraffic(p)
+	//	db.Create(&t)
+	//	broadcast <- t
+	//}
+
+	c.JSON(200, gin.H{"status": "uploaded and parsed"})
+}
+
 func (a *App) handlePostTraffic(c *gin.Context) {
 	var traffic models.Traffic
 	if err := c.ShouldBindJSON(&traffic); err != nil {
@@ -70,13 +116,20 @@ func (a *App) handlePostTraffic(c *gin.Context) {
 
 func (a *App) handleGetTraffic(c *gin.Context) {
 	var traffic []models.Traffic
-	sourceIP := c.Query("source_ip")
 
-	query := a.DB
-	if sourceIP != "" {
-		query = query.Where("source_ip LIKE ?", "%"+sourceIP+"%")
+	page := c.DefaultQuery("page", "1")
+	limit := c.DefaultQuery("limit", "20")
+	var pageInt, limitInt int
+	fmt.Sscanf(page, "%d", &pageInt)
+	fmt.Sscanf(limit, "%d", &limitInt)
+	offset := (pageInt - 1) * limitInt
+
+	traffic, err := (*a.TrafficRepo).GetTraffic(limitInt, offset)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
 	}
-	query.Order("id asc").Find(&traffic)
+
 	c.JSON(http.StatusOK, traffic)
 }
 
@@ -101,8 +154,8 @@ func (a *App) handleWebSocket(c *gin.Context) {
 
 	client := &Client{Conn: conn, Send: make(chan models.Traffic, 10)}
 	a.Clients[client] = true
+	fmt.Println("WS client connected")
 
-	// Логика чтения/записи (можно тоже вынести в отдельные методы Client)
 	go a.writePump(client)
 	go a.readPump(client)
 }

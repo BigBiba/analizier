@@ -6,9 +6,20 @@ import (
 )
 
 type FlowInfo struct {
-	FlowID  string
-	Packets []PacketInfo
-	Stats   FlowStats
+	FlowID        string
+	Interface     string
+	StartTime     time.Time
+	EndTime       time.Time
+	TrafficVolume int
+	SourceIP      string
+	DestinationIP string
+	IPVersion     string
+	SourcePort    string
+	DestPort      string
+	Length        int
+	Statuses      []string
+	Packets       []PacketInfo
+	Stats         FlowStats
 }
 
 type FlowStats struct {
