@@ -124,64 +124,6 @@ func ExportWindowsToCSV(filename string, windows []pkt.TimeWindow) error {
 	return nil
 }
 
-// totalRST возвращает суммарное количество RST-пакетов во всех окнах
-func totalRST(windows []pkt.TimeWindow) int {
-	total := 0
-	for _, w := range windows {
-		total += w.Stats.CntRST
-	}
-	return total
-}
-
-//////////////////////////////////////////////////////////////////////////
-
-func detectDDoSWindows(windows []pkt.TimeWindow) []pkt.TimeWindow {
-	var anomalous []pkt.TimeWindow
-	totalRST := totalRST(windows)
-	const (
-		bpsThreshold      = 1_000_000 // порог BPS
-		rstSynRatio       = 15.0      // порог RST/SYN (для атак с RST)
-		uniqueDstPortsAbs = 371       // абсолютный порог уникальных портов
-		highAvgPorts      = 1000      // порог для долгосрочного среднего
-		windowCount       = 10        // количество окон для среднего
-	)
-	if totalRST > 10 {
-		for i, w := range windows {
-			s := w.Stats
-
-			// 1. Аномальное отношение RST/SYN
-			if s.CntSYN > 0 && float64(s.CntRST)/float64(s.CntSYN) > rstSynRatio {
-				anomalous = append(anomalous, w)
-				continue
-			}
-
-			// Если BPS низкий – не рассматриваем
-			if s.BPS <= bpsThreshold {
-				continue
-			}
-
-			// 2. Абсолютное большое количество уникальных портов назначения
-			if s.UniqueDstPorts > uniqueDstPortsAbs {
-				anomalous = append(anomalous, w)
-				continue
-			}
-
-			// 3. Долгосрочное высокое среднее уникальных портов (ловит окна после начала атаки)
-			if i >= windowCount-1 {
-				avg := 0.0
-				for j := i - windowCount + 1; j <= i; j++ {
-					avg += float64(windows[j].Stats.UniqueDstPorts)
-				}
-				avg /= windowCount
-				if avg > highAvgPorts {
-					anomalous = append(anomalous, w)
-				}
-			}
-		}
-	}
-	return anomalous
-}
-
 // ------------------------------------------------------------
 // Основная функция
 // ------------------------------------------------------------
@@ -203,7 +145,9 @@ func main() {
 	}
 
 	// ----- DDoS детекция -----
-	anomalousWindows := detectDDoSWindows(windows)
+	ddosDet := &detector.DDoSDetector{}
+	anomalousWindows := ddosDet.AnalyzeWindows(windows)
+
 	dosFlowIDs := make(map[string]bool)
 	for _, win := range anomalousWindows {
 		for flowID, flow := range flows {
@@ -247,17 +191,51 @@ func main() {
 			}
 		}
 		if isSuspicious {
-			fmt.Printf("Suspicious flow: %s  dstPort=%d  packets=%d  BPS=%.0f  duration=%.2fs\n",
-				flow.FlowID, dstPort, flow.Stats.CntPackets, flow.Stats.BPS, flow.Stats.Duration.Seconds())
+			//fmt.Printf("Suspicious flow: %s  dstPort=%d  packets=%d  BPS=%.0f  duration=%.2fs\n",
+			//flow.FlowID, dstPort, flow.Stats.CntPackets, flow.Stats.BPS, flow.Stats.Duration.Seconds())
 		}
 
 		res := wormDet.Analyze(flow.Stats)
 		if res.IsAnomaly {
 			wormCount++
 			// выведем и те, что признаны аномальными
-			fmt.Printf("*** WORM DETECTED: %s  dstPort=%d  packets=%d  BPS=%.0f\n",
-				flow.FlowID, dstPort, flow.Stats.CntPackets, flow.Stats.BPS)
+			//fmt.Printf("*** WORM DETECTED: %s  dstPort=%d  packets=%d  BPS=%.0f\n",
+			//flow.FlowID, dstPort, flow.Stats.CntPackets, flow.Stats.BPS)
 		}
 	}
 	fmt.Printf("Total Worm flows (by detector): %d\n", wormCount)
+
+	// ----- Детектор перегрузки (адаптивный) -----
+	overloadDet := detector.NewAdaptiveOverloadDetector(10, 2.7) // 10 окон, 3 сигмы
+	overloadWindows := overloadDet.AnalyzeWindows(windows)
+
+	fmt.Printf("Overload windows: %d\n", len(overloadWindows))
+	for _, w := range overloadWindows {
+		fmt.Printf("  %s – %s  BPS=%.0f  PPS=%.0f\n",
+			w.StartTime.Format("15:04:05"), w.EndTime.Format("15:04:05"),
+			w.Stats.BPS, w.Stats.PPS)
+	}
+
+	// ----- Детектор вирусной активности -----
+	// Белый список IP из вашего дампа (легитимные серверы)
+	whitelist := []string{
+		//"149.171.126.0", "149.171.126.1", "149.171.126.2", "149.171.126.3",
+		//"149.171.126.4", "149.171.126.5", "149.171.126.6", "149.171.126.7",
+		//"149.171.126.8", "149.171.126.9", "149.171.126.10", "149.171.126.11",
+		//"149.171.126.12", "149.171.126.13", "149.171.126.14", "149.171.126.15",
+		//"149.171.126.16", "149.171.126.17", "149.171.126.18", "149.171.126.19",
+		//"175.45.176.0", "175.45.176.1", "175.45.176.2", "175.45.176.3",
+	}
+	virusDet := detector.NewVirusDetector(whitelist)
+
+	virusCount := 0
+	for _, flow := range flows {
+		res := virusDet.Analyze(flow.Stats)
+		if res.IsAnomaly {
+			virusCount++
+			fmt.Printf("*** VIRUS ACTIVITY: %s  dstIP=%s  dstPort=%s  packets=%d  duration=%.2fs BPS=%.0f\n",
+				flow.FlowID, flow.Stats.DstIP, flow.Stats.DstPort, flow.Stats.CntPackets, flow.Stats.Duration.Seconds(), flow.Stats.BPS)
+		}
+	}
+	fmt.Printf("Total Virus flows: %d\n", virusCount)
 }

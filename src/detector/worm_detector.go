@@ -14,6 +14,10 @@ type WormDetector struct {
 	InternalNet   *net.IPNet
 }
 
+func (d *WormDetector) Name() string {
+	return "WormDetector"
+}
+
 func NewWormDetector(minPackets int, minBPS float64, internalNet *net.IPNet) *WormDetector {
 	// Оставляем только порты, реально связанные с червями (445 – SMB, 139 – NetBIOS, 1433 – MSSQL)
 	// 6881 временно убираем, т.к. в чистом дампе много легитимного BitTorrent
