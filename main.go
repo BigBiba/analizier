@@ -1,13 +1,13 @@
 package main
 
 import (
+	"analizier/src/detector"
 	pkt "analizier/src/packet"
 	"analizier/src/parser"
 	"encoding/csv"
 	"fmt"
 	"os"
 	"strconv"
-	"time"
 )
 
 func printNPackets(packets []pkt.PacketInfo, n int) {
@@ -134,17 +134,37 @@ func main() {
 	parser := parser.NewParser()
 	filename := "files/1.pcap"
 	packets := parser.Parse(filename)
-	windows := pkt.SplitIntoWindows(packets, 10*time.Second)
-	err := ExportWindowsToCSV("files/1_windows.csv", windows)
-	if err != nil {
-		fmt.Println(err)
+	
+	// Create detectors
+	p2mp := detector.NewP2MPDetector()
+	portScan := detector.NewPortScanDetector()
+	flowSwitching := detector.NewFlowSwitchingDetector()
+
+	flows := DivideByFlow(packets)
+	fmt.Printf("Analyzing %d flows for anomalies...\n", len(flows))
+	
+	for _, v := range flows {
+		// Calculate internal flow stats
+		pkt.AnalyzeFlow(v)
+		
+		// 1. Port Scan Detector (Detector interface)
+		resScan := portScan.Analyze(v.Stats)
+		if resScan.IsAnomaly {
+			fmt.Printf("[%s] Anomaly on Flow ID [%s]: Confidence %.2f\n", portScan.Name(), v.FlowID, resScan.Confidence)
+		}
+		
+		// 2. Flow Switching Detector (FlowDetector interface)
+		resSwitch := flowSwitching.AnalyzeFlow(v)
+		if resSwitch.IsAnomaly {
+			fmt.Printf("[%s] Anomaly on Flow ID [%s]: Confidence %.2f\n", flowSwitching.Name(), v.FlowID, resSwitch.Confidence)
+		}
+		
+		// 3. P2MP Detector (FlowDetector interface)
+		resP2MP := p2mp.AnalyzeFlow(v)
+		if resP2MP.IsAnomaly {
+			fmt.Printf("[%s] Anomaly on Flow ID [%s]: Confidence %.2f\n", p2mp.Name(), v.FlowID, resP2MP.Confidence)
+		}
 	}
-	//flows := DivideByFlow(packets)
-	//for _, v := range flows {
-	//	pkt.AnalyzeFlow(v)
-	//}
-	//err := ExportFlowsToCSV("files/26_flows.csv", flows)
-	//if err != nil {
-	//	fmt.Println(err)
-	//}
+	
+	fmt.Println("Analysis Complete.")
 }
