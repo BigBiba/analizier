@@ -52,3 +52,8 @@ type Detector interface {
 	Name() string
 	Analyze(stats packet.FlowStats) DetectionResult
 }
+
+type FlowDetector interface {
+	Name() string
+	AnalyzeFlow(flow *packet.FlowInfo) DetectionResult
+}
