@@ -1,0 +1,21 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/app/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./files:/app/files
+      - ./traffic.db:/app/traffic.db
+    environment:
+      - GIN_MODE=release
+
+  frontend:
+    build:
+      context: ./frontend/traffic-ui
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend

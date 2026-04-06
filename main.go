@@ -1,9 +1,9 @@
 package main
 
 import (
+	"analizier/backend/src/parser"
 	"analizier/src/detector"
 	pkt "analizier/src/packet"
-	"analizier/src/parser"
 	"encoding/csv"
 	"fmt"
 	"net"
@@ -144,6 +144,54 @@ func main() {
 		pkt.AnalyzeFlow(flow)
 	}
 
+	// ===== Статистика =====
+	fmt.Println("==================== СТАТИСТИКА ====================")
+	fmt.Printf("Файл: %s\n", filename)
+	fmt.Printf("Всего пакетов: %d\n", len(packets))
+	fmt.Printf("Временных окон: %d\n", len(windows))
+	fmt.Printf("Всего потоков: %d\n", len(flows))
+
+	if len(windows) > 0 {
+		fmt.Println("\n--- Временные окна ---")
+		for i, win := range windows {
+			s := win.Stats
+			fmt.Printf("  [%d] %s – %s | PPS=%.0f | BPS=%.0f | Пакетов=%d | Байт=%d\n",
+				i+1,
+				win.StartTime.Format("15:04:05"),
+				win.EndTime.Format("15:04:05"),
+				s.PPS, s.BPS, s.TotalPackets, s.TotalBytes)
+		}
+	}
+
+	// Топ-5 потоков по количеству пакетов
+	if len(flows) > 0 {
+		fmt.Println("\n--- Топ-5 потоков по пакетам ---")
+		type flowEntry struct {
+			id   string
+			flow *pkt.FlowInfo
+		}
+		sorted := make([]flowEntry, 0, len(flows))
+		for id, flow := range flows {
+			sorted = append(sorted, flowEntry{id, flow})
+		}
+		for i := 0; i < len(sorted); i++ {
+			for j := i + 1; j < len(sorted); j++ {
+				if sorted[j].flow.Stats.CntPackets > sorted[i].flow.Stats.CntPackets {
+					sorted[i], sorted[j] = sorted[j], sorted[i]
+				}
+			}
+		}
+		for i := 0; i < 5 && i < len(sorted); i++ {
+			f := sorted[i]
+			fmt.Printf("  %s | %s:%s → %s:%s | Пакетов=%d | BPS=%.0f | SYN=%d RST=%d\n",
+				f.id,
+				f.flow.Packets[0].SrcIP, f.flow.Packets[0].SrcPort,
+				f.flow.Packets[0].DstIP, f.flow.Packets[0].DstPort,
+				f.flow.Stats.CntPackets, f.flow.Stats.BPS,
+				f.flow.Stats.CntSYN, f.flow.Stats.CntRST)
+		}
+	}
+
 	// ----- DDoS детекция -----
 	ddosDet := &detector.DDoSDetector{}
 	anomalousWindows := ddosDet.AnalyzeWindows(windows)
@@ -163,24 +211,23 @@ func main() {
 	}
 	dosCount := len(dosFlowIDs)
 
-	fmt.Printf("Anomalous windows: %d\n", len(anomalousWindows))
+	fmt.Println("\n==================== DDoS ДЕТЕКЦИЯ ====================")
+	fmt.Printf("Аномальных окон: %d\n", len(anomalousWindows))
 	for _, win := range anomalousWindows {
 		s := win.Stats
 		ratio := float64(s.CntRST) / float64(s.CntSYN+1)
-		fmt.Printf("  %s – %s  BPS=%.0f  PPS=%.0f  SYN=%d  RST=%d  RST/SYN=%.2f  UniqueDstPorts=%d\n",
+		fmt.Printf("  %s – %s | BPS=%.0f | PPS=%.0f | SYN=%d | RST=%d | RST/SYN=%.2f | UniqueDstPorts=%d\n",
 			win.StartTime.Format("15:04:05"), win.EndTime.Format("15:04:05"),
 			s.BPS, s.PPS, s.CntSYN, s.CntRST, ratio, s.UniqueDstPorts)
 	}
-	fmt.Printf("Total DoS flows (started in anomalous windows): %d\n", dosCount)
+	fmt.Printf("Потоков DoS: %d\n", dosCount)
 
-	// ----- Детекция червей (смягчённые пороги + отладка) -----
-	// Список подозрительных портов (включаем 25 для поиска)
+	// ----- Детекция червей -----
 	suspiciousPorts := []int{445, 139, 1433, 6881, 25}
 	_, internalNet, _ := net.ParseCIDR("59.166.0.0/16")
 	wormDet := detector.NewWormDetector(200, 100_000, internalNet)
 
 	wormCount := 0
-	fmt.Println("\n--- Debug: flows on suspicious ports (all, not only anomalies) ---")
 	for _, flow := range flows {
 		dstPort, _ := strconv.Atoi(flow.Stats.DstPort)
 		isSuspicious := false
@@ -191,41 +238,31 @@ func main() {
 			}
 		}
 		if isSuspicious {
-			//fmt.Printf("Suspicious flow: %s  dstPort=%d  packets=%d  BPS=%.0f  duration=%.2fs\n",
-			//flow.FlowID, dstPort, flow.Stats.CntPackets, flow.Stats.BPS, flow.Stats.Duration.Seconds())
-		}
-
-		res := wormDet.Analyze(flow.Stats)
-		if res.IsAnomaly {
-			wormCount++
-			// выведем и те, что признаны аномальными
-			//fmt.Printf("*** WORM DETECTED: %s  dstPort=%d  packets=%d  BPS=%.0f\n",
-			//flow.FlowID, dstPort, flow.Stats.CntPackets, flow.Stats.BPS)
+			res := wormDet.Analyze(flow.Stats)
+			if res.IsAnomaly {
+				wormCount++
+				fmt.Printf("  [ЧЕРВЬ] %s | dstPort=%d | Пакетов=%d | BPS=%.0f\n",
+					flow.FlowID, dstPort, flow.Stats.CntPackets, flow.Stats.BPS)
+			}
 		}
 	}
-	fmt.Printf("Total Worm flows (by detector): %d\n", wormCount)
+	fmt.Println("\n==================== ДЕТЕКЦИЯ ЧЕРВЕЙ ====================")
+	fmt.Printf("Потоков-червей: %d\n", wormCount)
 
-	// ----- Детектор перегрузки (адаптивный) -----
-	overloadDet := detector.NewAdaptiveOverloadDetector(10, 2.7) // 10 окон, 3 сигмы
+	// ----- Детектор перегрузки -----
+	overloadDet := detector.NewAdaptiveOverloadDetector(10, 2.7)
 	overloadWindows := overloadDet.AnalyzeWindows(windows)
 
-	fmt.Printf("Overload windows: %d\n", len(overloadWindows))
+	fmt.Println("\n==================== ПЕРЕГРУЗКА ====================")
+	fmt.Printf("Окон перегрузки: %d\n", len(overloadWindows))
 	for _, w := range overloadWindows {
-		fmt.Printf("  %s – %s  BPS=%.0f  PPS=%.0f\n",
+		fmt.Printf("  %s – %s | BPS=%.0f | PPS=%.0f\n",
 			w.StartTime.Format("15:04:05"), w.EndTime.Format("15:04:05"),
 			w.Stats.BPS, w.Stats.PPS)
 	}
 
 	// ----- Детектор вирусной активности -----
-	// Белый список IP из вашего дампа (легитимные серверы)
-	whitelist := []string{
-		//"149.171.126.0", "149.171.126.1", "149.171.126.2", "149.171.126.3",
-		//"149.171.126.4", "149.171.126.5", "149.171.126.6", "149.171.126.7",
-		//"149.171.126.8", "149.171.126.9", "149.171.126.10", "149.171.126.11",
-		//"149.171.126.12", "149.171.126.13", "149.171.126.14", "149.171.126.15",
-		//"149.171.126.16", "149.171.126.17", "149.171.126.18", "149.171.126.19",
-		//"175.45.176.0", "175.45.176.1", "175.45.176.2", "175.45.176.3",
-	}
+	whitelist := []string{}
 	virusDet := detector.NewVirusDetector(whitelist)
 
 	virusCount := 0
@@ -233,9 +270,14 @@ func main() {
 		res := virusDet.Analyze(flow.Stats)
 		if res.IsAnomaly {
 			virusCount++
-			fmt.Printf("*** VIRUS ACTIVITY: %s  dstIP=%s  dstPort=%s  packets=%d  duration=%.2fs BPS=%.0f\n",
-				flow.FlowID, flow.Stats.DstIP, flow.Stats.DstPort, flow.Stats.CntPackets, flow.Stats.Duration.Seconds(), flow.Stats.BPS)
+			fmt.Printf("  [ВИРУС] %s | dstIP=%s | dstPort=%s | Пакетов=%d | BPS=%.0f\n",
+				flow.FlowID, flow.Stats.DstIP, flow.Stats.DstPort,
+				flow.Stats.CntPackets, flow.Stats.BPS)
 		}
 	}
-	fmt.Printf("Total Virus flows: %d\n", virusCount)
+	fmt.Println("\n==================== ВИРУСНАЯ АКТИВНОСТЬ ====================")
+	fmt.Printf("Потоков с вирусами: %d\n", virusCount)
+
+	fmt.Println("\n======================================================")
+	fmt.Println("Анализ завершён")
 }

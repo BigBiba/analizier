@@ -1,2 +1,5 @@
 *.pcap
-/.idea
+/.idea*.db
+*.bak
+*.orig
+.qwen/
