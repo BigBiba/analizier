@@ -36,6 +36,10 @@ type FlowStats struct {
 	CntPSH           int
 	CntRST           int
 	CntURG           int
+	SrcIP            string
+	DstIP            string
+	SrcPort          string
+	DstPort          string
 }
 
 func CalculateStdDev(lengths []int) float64 {
@@ -120,5 +124,10 @@ func AnalyzeFlow(flow *FlowInfo) {
 	stat.Duration = CalculateDuration(flow)
 	stat.BPS = CalculateBPS(stat.Duration, stat.FlowLength)
 	stat.IAT = CalculateIAT(stat.Duration, stat.CntPackets)
+	// Заполняем IP/Port из FlowInfo
+	stat.SrcIP = flow.SourceIP
+	stat.DstIP = flow.DestinationIP
+	stat.SrcPort = flow.SourcePort
+	stat.DstPort = flow.DestPort
 	flow.Stats = stat
 }

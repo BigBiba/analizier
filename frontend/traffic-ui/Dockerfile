@@ -1,4 +1,4 @@
-FROM node:18
+FROM node:18 AS builder
 
 WORKDIR /app
 
@@ -6,9 +6,14 @@ COPY package*.json ./
 RUN npm install
 
 COPY . .
-
 RUN npm run build
 
-RUN npm install -g serve
+# Production stage с nginx
+FROM nginx:alpine
 
-CMD ["serve", "-s", "build", "-l", "3000"]
+COPY --from=builder /app/build /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 3000
+
+CMD ["nginx", "-g", "daemon off;"]

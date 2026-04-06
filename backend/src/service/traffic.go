@@ -4,8 +4,8 @@ import (
 	"analizier/backend/src/detector"
 	"analizier/backend/src/models"
 	"strings"
+	"time"
 
-	//"analizier/backend/src/models"
 	pkt "analizier/backend/src/packet"
 	prs "analizier/backend/src/parser"
 	"analizier/backend/src/repository"
@@ -98,15 +98,39 @@ func (s *TrafficService) Pipeline(filename string) error {
 	packets := parser.Parse(filename)
 	flows := divideByFlow(packets)
 
+	// Разбиваем на временные окна для DDoS и Overload детекторов
+	windows := pkt.SplitIntoWindows(packets, 10*time.Second)
+
+	// Синхронный анализ окон (DDoS, Overload)
+	anomalousFlows := make(map[string]string) // flowID -> detectorName
+	for _, det := range s.detectors {
+		if dd, ok := det.(interface {
+			AnalyzeWindows([]pkt.TimeWindow) []pkt.TimeWindow
+		}); ok {
+			anomalousWins := dd.AnalyzeWindows(windows)
+			for _, win := range anomalousWins {
+				for flowID, flow := range flows {
+					if len(flow.Packets) == 0 {
+						continue
+					}
+					firstPkt := flow.Packets[0].Timestamp
+					if (firstPkt.After(win.StartTime) || firstPkt.Equal(win.StartTime)) &&
+						(firstPkt.Before(win.EndTime) || firstPkt.Equal(win.EndTime)) {
+						anomalousFlows[flowID] = det.Name()
+					}
+				}
+			}
+		}
+	}
+
 	var trafficRecords []*models.Traffic
 
 	for _, flow := range flows {
 		pkt.AnalyzeFlow(flow)
 
-		// Преобразуем FlowInfo в модель БД (функцию MapFlowToTraffic нужно написать)
 		trafficModel := MapFlowToTraffic(flow)
 
-		// Ищем аномалии
+		// Per-flow детекторы (Worm, Virus)
 		for _, d := range s.detectors {
 			detRes := d.Analyze(flow.Stats)
 			if detRes.IsAnomaly {
@@ -115,10 +139,24 @@ func (s *TrafficService) Pipeline(filename string) error {
 				})
 			}
 		}
-		s.broadcast <- trafficModel
 
+		// DDoS/Overload аномалии из анализа окон
+		if detName, ok := anomalousFlows[flow.FlowID]; ok {
+			if detName == "DDoSDetector" {
+				trafficModel.Anomalies = append(trafficModel.Anomalies, models.Anomaly{
+					AnomalyType: detector.AnomalyDoS.String(),
+				})
+			} else if detName == "OverloadDetector" {
+				trafficModel.Anomalies = append(trafficModel.Anomalies, models.Anomaly{
+					AnomalyType: detector.AnomalyOverload.String(),
+				})
+			}
+		}
+
+		s.broadcast <- trafficModel
 		trafficRecords = append(trafficRecords, &trafficModel)
 	}
+
 	err := s.repo.CreateBulk(trafficRecords)
 	if err != nil {
 		return err

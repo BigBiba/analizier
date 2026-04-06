@@ -5,6 +5,8 @@ import (
 	"log"
 	"net"
 
+	pkt "analizier/backend/src/packet"
+
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
 	"github.com/gopacket/gopacket/pcap"

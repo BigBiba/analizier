@@ -6,11 +6,27 @@ import (
 	"analizier/backend/src/repository"
 	"analizier/backend/src/service"
 	"fmt"
+	"net"
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	"net/http"
 )
+
+// ------------------------------------------------------------
+// Client
+// ------------------------------------------------------------
+
+type Client struct {
+	Conn *websocket.Conn
+	Send chan models.Traffic
+}
+
+// ------------------------------------------------------------
+// App
+// ------------------------------------------------------------
 
 type App struct {
 	Router         *gin.Engine
@@ -27,7 +43,15 @@ func NewApp(db *gorm.DB) *App {
 	router.MaxMultipartMemory = 10 << 20
 
 	repo := repository.NewSqliteTrafficRepo(db)
-	detectors := []detector.Detector{}
+
+	// Инициализация детекторов
+	_, internalNet, _ := net.ParseCIDR("59.166.0.0/16")
+	detectors := []detector.Detector{
+		&detector.DDoSDetector{},
+		detector.NewWormDetector(200, 100_000, internalNet),
+		detector.NewAdaptiveOverloadDetector(10, 2.7),
+		detector.NewVirusDetector([]string{}),
+	}
 
 	broadcast := make(chan models.Traffic)
 
@@ -47,19 +71,14 @@ func NewApp(db *gorm.DB) *App {
 }
 
 func (a *App) SetupRouter() {
-	// Настройка CORS
 	a.Router.Use(a.corsMiddleware())
 
 	api := a.Router.Group("/api")
 	{
-		// POST /api/traffic
 		api.POST("/traffic", a.handlePostTraffic)
-		// GET /api/traffic
 		api.GET("/traffic", a.handleGetTraffic)
-		// POST /api/upload
 		api.POST("/upload", a.handleUpload)
 	}
-
 	a.Router.GET("/ws", a.handleWebSocket)
 }
 
@@ -76,6 +95,8 @@ func (a *App) corsMiddleware() gin.HandlerFunc {
 	}
 }
 
+// --- Handlers ---
+
 func (a *App) handleUpload(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
@@ -88,19 +109,12 @@ func (a *App) handleUpload(c *gin.Context) {
 		return
 	}
 
+	fmt.Printf("Uploading file: %s\n", path)
 	err = a.TrafficService.Pipeline(path)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	//parser := parser.NewParser()
-	//packets := parser.Parse(path)
-
-	//for _, p := range packets {
-	//	t := MapPacketToTraffic(p)
-	//	db.Create(&t)
-	//	broadcast <- t
-	//}
 
 	c.JSON(200, gin.H{"status": "uploaded and parsed"})
 }
@@ -121,31 +135,34 @@ func (a *App) handleGetTraffic(c *gin.Context) {
 
 	page := c.DefaultQuery("page", "1")
 	limit := c.DefaultQuery("limit", "20")
+	sourceIP := c.DefaultQuery("source_ip", "")
+
 	var pageInt, limitInt int
 	fmt.Sscanf(page, "%d", &pageInt)
 	fmt.Sscanf(limit, "%d", &limitInt)
 	offset := (pageInt - 1) * limitInt
 
-	traffic, err := (*a.TrafficRepo).GetTraffic(limitInt, offset)
+	query := a.DB
+	if sourceIP != "" {
+		query = query.Where("source_ip LIKE ?", "%"+sourceIP+"%")
+	}
+
+	traffic, err := (*a.TrafficRepo).GetTrafficWithFilter(limitInt, offset, sourceIP)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, traffic)
-}
-
-func (a *App) handleGetTrafficFile(c *gin.Context) {
-	file, err := c.FormFile("file")
+	total, err := (*a.TrafficRepo).CountTraffic(sourceIP)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No file uploaded"})
+		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	tempPath := "temp_" + file.Filename
-	if err := c.SaveUploadedFile(file, tempPath); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
-		return
-	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"data":  traffic,
+		"total": total,
+	})
 }
 
 func (a *App) handleWebSocket(c *gin.Context) {
@@ -195,4 +212,24 @@ func (a *App) runBroadcast() {
 			}
 		}
 	}
+}
+
+// ------------------------------------------------------------
+// Main
+// ------------------------------------------------------------
+
+func main() {
+	db, err := gorm.Open(sqlite.Open("traffic.db"), &gorm.Config{})
+	if err != nil {
+		panic(err)
+	}
+	db.AutoMigrate(&models.Traffic{}, &models.Anomaly{})
+
+	app := NewApp(db)
+	app.SetupRouter()
+
+	go app.runBroadcast()
+
+	fmt.Println("Server starting on 0.0.0.0:8080")
+	app.Router.Run("0.0.0.0:8080")
 }

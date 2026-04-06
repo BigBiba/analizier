@@ -6,6 +6,7 @@ import {
 
 function App() {
   const [data, setData] = useState([]);
+  const [totalItems, setTotalItems] = useState(0);
   const [filterIP, setFilterIP] = useState("");
   const [filterAnomaly, setFilterAnomaly] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
@@ -13,8 +14,13 @@ function App() {
 
   const itemsPerPage = 20;
 
-  const getAnomaly = (item) =>
-    item?.anomaly_type?.trim() || "None";
+  // Извлекаем тип аномалии из массива anomalies
+  const getAnomaly = (item) => {
+    if (item?.anomalies?.length > 0) {
+      return item.anomalies[0].anomaly_type;
+    }
+    return "None";
+  };
 
   const getRowStyle = (anomaly) => {
     switch (anomaly) {
@@ -56,7 +62,7 @@ function App() {
     const formData = new FormData();
     formData.append("file", file);
 
-    await fetch("http://127.0.0.1:8080/api/upload", {
+    await fetch("/api/upload", {
       method: "POST",
       body: formData,
     });
@@ -65,7 +71,7 @@ function App() {
   };
 
   const fetchData = useCallback(() => {
-    let url = `http://127.0.0.1:8080/api/traffic?page=${currentPage}&limit=${itemsPerPage}`;
+    let url = `/api/traffic?page=${currentPage}&limit=${itemsPerPage}`;
 
     if (filterIP.trim() !== "") {
       url += `&source_ip=${encodeURIComponent(filterIP)}`;
@@ -73,7 +79,10 @@ function App() {
 
     fetch(url)
       .then((res) => res.json())
-      .then((items) => setData(items || []));
+      .then((result) => {
+        setData(result.data || []);
+        setTotalItems(result.total || 0);
+      });
   }, [filterIP, currentPage]);
 
   useEffect(() => {
@@ -81,7 +90,9 @@ function App() {
   }, [fetchData]);
 
   useEffect(() => {
-    const ws = new WebSocket("ws://127.0.0.1:8080/ws");
+    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsHost = window.location.host || "localhost:8080";
+    const ws = new WebSocket(`${wsProtocol}//${wsHost}/ws`);
 
     ws.onmessage = (event) => {
       const newData = JSON.parse(event.data);
@@ -104,9 +115,10 @@ function App() {
     );
   });
 
-  const totalPages = Math.ceil(filteredData.length / itemsPerPage);
-  const startIndex = (currentPage - 1) * itemsPerPage;
-  const paginatedData = filteredData.slice(startIndex, startIndex + itemsPerPage);
+  const totalPages = Math.ceil(totalItems / itemsPerPage);
+
+  // Пагинация уже пришла с бэкенда — данные уже paginated
+  const paginatedData = filteredData;
 
   const trafficByIP = Object.values(
     filteredData.reduce((acc, cur) => {
@@ -160,6 +172,7 @@ function App() {
   console.log("SAMPLE ITEM:", anomaliesCount.length);
   console.log(getAnomaly(data[0]));
   console.log("RAW ITEM:", data[0]);
+  console.log(anomaliesCount.length)
   return (
     <div style={{ padding: "20px" }}>
       <h2>Network Traffic</h2>
