@@ -16,7 +16,7 @@ type FlowStats struct {
 	FlowLength       int
 	AvgPacketSize    float64
 	StdDevPacketSize float64
-	BPS              float64 // Bytes per Second
+	BPS              float64
 	IAT              time.Duration
 	Duration         time.Duration
 	CntSYN           int
@@ -25,6 +25,10 @@ type FlowStats struct {
 	CntPSH           int
 	CntRST           int
 	CntURG           int
+	SrcPort          string // порт источника
+	DstPort          string // порт назначения
+	SrcIP            string // IP источника
+	DstIP            string // IP назначения
 }
 
 func CalculateStdDev(lengths []int) float64 {
@@ -110,4 +114,13 @@ func AnalyzeFlow(flow *FlowInfo) {
 	stat.BPS = CalculateBPS(stat.Duration, stat.FlowLength)
 	stat.IAT = CalculateIAT(stat.Duration, stat.CntPackets)
 	flow.Stats = stat
+
+	if len(flow.Packets) > 0 {
+		stat.SrcPort = flow.Packets[0].SrcPort
+		stat.DstPort = flow.Packets[0].DstPort
+		stat.SrcIP = flow.Packets[0].SrcIP
+		stat.DstIP = flow.Packets[0].DstIP
+	}
+	flow.Stats = stat
+
 }
