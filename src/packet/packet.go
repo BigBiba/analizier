@@ -1,18 +1,28 @@
-package main
+package packet
 
 import (
-	"analizier/src/parser"
 	"fmt"
+	"github.com/gopacket/gopacket"
 	"strings"
+	"time"
 )
 
-func printNPackets(packets []parser.PacketInfo, n int) {
-	for i := 0; i < n; i++ {
-		printPacketInfo(packets[i])
-	}
+type PacketInfo struct {
+	PacketNumber  int // № пакета
+	FlowID        gopacket.Flow
+	Interface     string    // Интерфейс
+	Timestamp     time.Time // Текущее время и дата пакета
+	TrafficVolume int       // Объем трафика
+	SrcIP         string    // Источник (IP адрес)
+	DstIP         string    // Назначение (IP адрес)
+	IPVersion     string    // Internet Протокол version
+	SrcPort       string    // Порт источника
+	DstPort       string    // Порт назначения
+	Length        int       // Длина
+	Flags         []string
 }
 
-func printPacketInfo(info parser.PacketInfo) {
+func PrintPacketInfo(info PacketInfo) {
 	const fieldWidth = 20
 
 	formatField := func(name string, value interface{}) {
@@ -34,7 +44,6 @@ func printPacketInfo(info parser.PacketInfo) {
 	}
 
 	formatField("Длина пакета", fmt.Sprintf("%d байт", info.Length))
-	formatField("Статус (Info)", ifEmpty(info.Info, "—"))
 
 	fmt.Println(strings.Repeat("=", 50))
 	fmt.Println()
@@ -45,11 +54,4 @@ func ifEmpty(s, fallback string) string {
 		return fallback
 	}
 	return s
-}
-
-func main() {
-	parser := parser.NewParser()
-	filename := "files/1.pcap"
-	packets := parser.Parse(filename)
-	printNPackets(packets, 5)
 }
